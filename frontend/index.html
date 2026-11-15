@@ -1,0 +1,620 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SPHEREx Sky-Motion Viewer</title>
+<meta name="description" content="Flip through NASA SPHEREx infrared images of any spot on the sky to find moving and variable objects, with spectra on the fly.">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.27.0/plotly.min.js"></script>
+<script type="module">
+  // Aladin Lite v3.8 ships as an ES module: import it and hand it to the page script.
+  import A from 'https://cdn.jsdelivr.net/npm/aladin-lite@3.8.2/dist/aladin.js';
+  window.A = A; window.dispatchEvent(new Event('aladin-ready'));
+</script>
+<style>
+  :root { --bg:#0e1116; --fg:#e6e6e6; --mut:#8b949e; --acc:#4ea1ff; --card:#161b22; --bd:#30363d;
+          --gaia:#3fb950; --wise:#d2a8ff; --fast:#f0883e; --warn:#f85149; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  main { max-width:1200px; margin:0 auto; padding:16px; }
+  header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+  h1 { font-size:20px; margin:0; } h2 { font-size:15px; margin:0 0 8px; }
+  .card { min-width:0; overflow-wrap:anywhere; background:var(--card); border:1px solid var(--bd); border-radius:8px; padding:12px; margin-bottom:12px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  input, select, button { background:#0d1117; color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:6px 8px; font:inherit; max-width:100%; }
+  input[type=number] { width:118px; } input[type=range] { padding:0; }
+  button { cursor:pointer; } button:hover { border-color:var(--acc); }
+  button.primary { background:var(--acc); color:#000; border-color:var(--acc); font-weight:600; }
+  button.link, a.btn { background:none; border:1px solid var(--bd); color:var(--acc); text-decoration:none; padding:6px 8px; border-radius:6px; display:inline-block; }
+  .mut { color:var(--mut); } .small { font-size:12px; }
+  progress { width:100%; height:8px; accent-color:var(--acc); }
+  .grid { display:grid; grid-template-columns:minmax(0, 520px) minmax(0, 1fr); gap:12px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .stage { position:relative; cursor:crosshair; user-select:none; }
+  #frame { width:100%; aspect-ratio:1; image-rendering:pixelated; background:#000; border-radius:6px; display:block; }
+  #overlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+  #overlay circle { fill:none; vector-effect:non-scaling-stroke; stroke-width:1.2; pointer-events:all; }
+  #overlay circle.gaia { stroke:var(--gaia); } #overlay circle.wise { stroke:var(--wise); stroke-dasharray:3 2; }
+  #overlay circle.fast { stroke:var(--fast); stroke-width:1.8; }
+  #overlay line { stroke:var(--fast); vector-effect:non-scaling-stroke; stroke-width:1.5; }
+  #overlay .cross { stroke:#ffd33d; vector-effect:non-scaling-stroke; stroke-width:1.5; }
+  #overlay .pick { stroke:#ff7bf2; vector-effect:non-scaling-stroke; stroke-width:2; fill:none; }
+  .plot { width:100%; height:300px; }
+  #aladin { width:100%; height:380px; border-radius:6px; overflow:hidden; }
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th, td { text-align:left; padding:3px 6px; border-bottom:1px solid var(--bd); white-space:nowrap; }
+  tbody tr { cursor:pointer; } tbody tr:hover { background:#1f2630; }
+  .scroll { max-height:280px; overflow:auto; }
+  .tag { display:inline-block; padding:0 5px; border-radius:4px; background:#30363d; margin:1px; font-size:11px; }
+  .tag.bad { background:#5a1d1d; }
+  .hide { display:none !important; }
+  #aiLog { max-height:420px; overflow:auto; display:flex; flex-direction:column; gap:8px; margin:8px 0; }
+  .msg { padding:8px 10px; border-radius:8px; max-width:92%; }
+  .msg.user { align-self:flex-end; background:#1f3a5f; }
+  .msg.ai { align-self:flex-start; background:#0d1117; border:1px solid var(--bd); }
+  .msg.ai p { margin:0 0 6px; } .msg.ai ul { margin:4px 0 6px 18px; padding:0; }
+  .msg.err { color:var(--warn); }
+  .chip { background:#0d1117; border:1px solid var(--bd); border-radius:14px; padding:3px 10px; font-size:12px; color:var(--acc); cursor:pointer; }
+  .chip:hover { border-color:var(--acc); }
+  #aiInput { flex:1; min-width:0; }
+  details summary { cursor:pointer; color:var(--acc); }
+  kbd { background:#30363d; border-radius:3px; padding:0 4px; font-size:12px; }
+  body.embed main { padding:6px; max-width:none; } body.embed .noembed { display:none !important; }
+  body.embed .grid { grid-template-columns: minmax(0, 1fr); }
+</style>
+</head>
+<body>
+<main>
+  <header class="noembed">
+    <h1>Orbit-X</h1>
+    <span class="mut">Flip through NASA SPHEREx infrared images to find things that move or change.</span>
+    <button class="link" id="helpBtn">How to use</button>
+  </header>
+
+  <div class="card noembed hide" id="help">
+    <h2>How to spot a moving or changing object</h2>
+    <ol>
+      <li><b>Pick a spot.</b> Type a name (<i>Barnard's Star</i>, <i>R Dra</i>) or coordinates
+        (<code>133.795 -7.245</code> or <code>08h55m10.8s -07d14m42s</code>), choose a field of view, press <b>Load</b>.
+        Names are moved by their proper motion to the SPHEREx date, so fast stars are centred.</li>
+      <li><b>Watch the flipbook.</b> Each frame stacks all images from one ~6-month SPHEREx visit. A star that
+        jumps between frames is moving (nearby stars, brown dwarfs); one that changes brightness is variable.</li>
+      <li><b>Use Difference.</b> Each visit minus the first: still objects vanish to grey, a mover becomes a
+        <b>black/white pair</b> (black = where it was, white = where it is). <b>A − B</b> subtracts any two visits.
+        <b>Deep</b> adds all visits together to see fainter things.</li>
+      <li><b>Pick a colour band.</b> SPHEREx splits 0.75–5 µm into 102 channels over 6 detectors.
+        <b>D1</b> (0.75–1.1 µm) … <b>D6</b> (4.4–5.0 µm) stack each detector; <b>RGB</b> maps short → blue, long → red,
+        so very cold objects like brown dwarfs look red.</li>
+      <li><b>Click any star</b> in the frame to get its <b>spectrum</b> (brightness vs wavelength) and
+        <b>light curve</b> (brightness vs time), computed on the fly from the images.</li>
+      <li><b>Compare</b> with Gaia (green circles; orange = fast movers with a 10-year arrow) and WISE (purple),
+        the sky map below, or WiseView (10 years of WISE).</li>
+    </ol>
+    <p class="mut small">Keys: <kbd>Space</kbd> play/pause · <kbd>←</kbd>/<kbd>→</kbd> step · <kbd>D</kbd> difference · <kbd>B</kbd> blink.
+      Share or embed: every search updates the page URL (<code>?name=…</code> or <code>?ra=…&amp;dec=…&amp;fov=…</code>);
+      add <code>&amp;embed=1</code> for a compact view to put in an <code>&lt;iframe&gt;</code>.</p>
+  </div>
+
+  <div class="card noembed">
+    <div class="row">
+      <input id="target" placeholder="Name or coordinates, e.g. Barnard's Star" size="34" aria-label="Target">
+      <button id="resolveBtn">Find</button>
+      RA <input id="ra" type="number" step="any" placeholder="deg" aria-label="RA">
+      Dec <input id="dec" type="number" step="any" placeholder="deg" aria-label="Dec">
+    </div>
+    <div class="row" style="margin-top:8px">
+      FOV <select id="fov" aria-label="Field of view">
+        <option value="0.0167">1′</option><option value="0.0333">2′</option><option value="0.05">3′</option>
+        <option value="0.0833" selected>5′</option><option value="0.1667">10′</option>
+        <option value="0.25">15′</option><option value="0.3333">20′</option><option value="0.5">30′</option>
+      </select>
+      <span class="mut small" id="fovNote"></span>
+      <span>Detectors</span><span id="dets"></span>
+      <button class="primary" id="go">Load</button>
+    </div>
+    <div class="row small" style="margin-top:8px">
+      <a class="btn" id="wise" target="_blank" rel="noopener">WiseView ↗</a>
+      <button class="link" id="share">Copy link</button>
+      <button class="link" id="embedBtn">Copy embed code</button>
+      <a class="btn hide" id="gif" target="_blank" rel="noopener">Download GIF</a>
+    </div>
+    <div id="resolved" class="mut small" style="margin-top:6px"></div>
+  </div>
+
+  <div class="card">
+    <progress id="prog" value="0" max="1"></progress>
+    <div id="status" class="mut small">Pick a target and press Load.</div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="stage" id="stage">
+        <img id="frame" alt="SPHEREx frame">
+        <svg id="overlay" viewBox="0 0 1 1" preserveAspectRatio="none">
+          <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#f0883e"/></marker></defs>
+          <g id="catLayer"></g><g id="markLayer"></g>
+        </svg>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <select id="mode" aria-label="View">
+          <option value="stack">Stack per visit</option><option value="diff">Difference (− first)</option>
+          <option value="ab">A − B</option><option value="blink">Blink A ↔ B</option>
+          <option value="deep">Deep (all visits)</option><option value="single">Single exposures</option>
+        </select>
+        <select id="band" aria-label="Band"></select>
+        <span id="abBox" class="hide">A <select id="va"></select> B <select id="vb"></select></span>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="prev" aria-label="Previous frame">◀</button>
+        <button id="play">⏸</button>
+        <button id="next" aria-label="Next frame">▶</button>
+        <input id="slider" type="range" min="0" max="0" value="0" style="flex:1" aria-label="Frame">
+        <span class="mut small">speed</span><input id="speed" type="range" min="100" max="2000" value="700" step="50" style="width:90px" aria-label="Speed">
+      </div>
+      <div class="row small" style="margin-top:8px">
+        <label><input type="checkbox" id="gaiaOn" checked> <span style="color:var(--gaia)">Gaia</span></label>
+        <select id="gmax" title="Gaia magnitude limit"><option value="14">G&lt;14</option><option value="16" selected>G&lt;16</option><option value="18">G&lt;18</option></select>
+        <label><input type="checkbox" id="wiseOn"> <span style="color:var(--wise)">WISE</span></label>
+        <label><input type="checkbox" id="crossOn" checked> target</label>
+      </div>
+      <div id="label" class="small" style="margin-top:6px"></div>
+      <div id="catInfo" class="mut small" style="margin-top:4px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between"><h2 id="specTitle">Spectrum</h2>
+        <button class="link hide" id="backToTarget">Back to target</button></div>
+      <div id="spec" class="plot"></div>
+      <div id="lc" class="plot"></div>
+      <div id="specNote" class="mut small"></div>
+    </div>
+  </div>
+
+  <div class="card noembed hide" id="aiCard">
+    <div class="row" style="justify-content:space-between">
+      <h2>AI guide <span class="mut small">· explains what you're seeing (Google Gemini)</span></h2>
+      <button class="primary" id="aiExplain">Explain what I'm seeing</button>
+    </div>
+    <div class="row" id="aiChips"></div>
+    <div id="aiLog" aria-live="polite"></div>
+    <div class="row">
+      <input id="aiInput" placeholder="Ask about this field, e.g. Is anything moving here?" maxlength="1000" aria-label="Question for the AI guide">
+      <button id="aiAsk">Ask</button>
+      <button class="link" id="aiClear" title="Start a new conversation">Clear</button>
+    </div>
+    <div class="mut small" style="margin-top:6px">The guide sees the tool's measurements and the frame on screen. It can be wrong: check important points in the data.</div>
+  </div>
+
+  <div class="grid noembed">
+    <div class="card">
+      <div class="row" style="justify-content:space-between"><h2>Sky map (Aladin Lite)</h2>
+        <select id="survey" aria-label="Background survey">
+          <!-- IRSA mirrors (CDS alasky was down on 2026-11-15); IRSA also serves SPHEREx's own all-sky cube -->
+          <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/AllWISE/RGB-W4-W2-W1">AllWISE color (IRSA)</option>
+          <option value="https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube">SPHEREx DR1 all-sky (IRSA)</option>
+          <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/2MASS/Color">2MASS color (IRSA)</option>
+          <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/DSS2/color">DSS2 optical (IRSA)</option>
+        </select></div>
+      <div id="aladin"></div>
+      <div class="mut small" style="margin-top:6px">Blue box = SPHEREx field. Click the map to move the search there.</div>
+    </div>
+    <div class="card">
+      <h2>Metadata &amp; contamination flags</h2>
+      <div id="visitTable" class="scroll"></div>
+      <details style="margin-top:8px"><summary>All exposures</summary>
+        <div class="mut small">Flags are measured near the target (rows ±4 px). Red = set inside the photometry aperture. Click a row to view that exposure.</div>
+        <div id="expTable" class="scroll"></div>
+      </details>
+    </div>
+  </div>
+  <div class="card noembed"><div id="log" class="mut small" style="font-family:ui-monospace,monospace;white-space:pre-wrap;max-height:100px;overflow:auto"></div></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const SVGNS = 'http://www.w3.org/2000/svg';
+const WAVES = {D1:'0.75–1.09', D2:'1.10–1.62', D3:'1.63–2.41', D4:'2.42–3.82', D5:'3.83–4.41', D6:'4.42–5.00'};
+const DCOL = {1:'#6e40c9', 2:'#1f6feb', 3:'#3fb950', 4:'#d29922', 5:'#f0883e', 6:'#f85149'};
+let M = null, jobId = null, frames = [], cur = 0, timer = null, playing = true, es = null;
+let cats = {gaia: null, wise: null}, pick = null, aladin = null, alCats = {};
+const params = new URLSearchParams(location.search);
+if (params.get('embed') === '1') document.body.classList.add('embed');
+
+for (let d = 1; d <= 6; d++)
+  $('dets').insertAdjacentHTML('beforeend', `<label title="${WAVES['D' + d]} µm"><input type="checkbox" value="${d}" checked> D${d}</label> `);
+function bandOptions(avail) {
+  const opts = [['all', 'All detectors']].concat(Object.keys(WAVES).map(d => [d, `${d} ${WAVES[d]} µm`]), [['rgb', 'RGB false colour']]);
+  const sel = $('band'), keep = sel.value || params.get('band') || 'all';
+  sel.innerHTML = opts.filter(([v]) => !avail || avail.includes(v)).map(([v, t]) => `<option value="${v}">${t}</option>`).join('');
+  if ([...sel.options].some(o => o.value === keep)) sel.value = keep;
+}
+bandOptions();
+function log(msg) { $('log').textContent += msg + '\n'; $('log').scrollTop = 1e9; }
+$('helpBtn').onclick = () => $('help').classList.toggle('hide');
+$('fov').onchange = () => { const f = +$('fov').value * 60;
+  $('fovNote').textContent = f > 15 ? 'large field: slower first load' : ''; };
+
+// ---------------------------------------------------------------- resolve
+async function resolveTarget() {
+  const q = $('target').value.trim(); if (!q) return null;
+  $('resolved').textContent = 'Looking up…';
+  const r = await fetch('/api/resolve?name=' + encodeURIComponent(q));
+  if (!r.ok) { $('resolved').textContent = 'Not found. Try another name or RA Dec in degrees.'; return null; }
+  const j = await r.json();
+  $('ra').value = j.ra.toFixed(6); $('dec').value = j.dec.toFixed(6);
+  $('resolved').textContent = j.source === 'coordinates' ? `Coordinates ${j.ra.toFixed(5)}, ${j.dec.toFixed(5)}` :
+    `${j.main_id}: catalogue ${j.ra_cat.toFixed(5)}, ${j.dec_cat.toFixed(5)} → at ${j.epoch} ${j.ra.toFixed(5)}, ${j.dec.toFixed(5)}` +
+    (j.pmra != null ? ` (proper motion ${j.pmra.toFixed(0)}, ${j.pmdec.toFixed(0)} mas/yr)` : '') + ` · ${j.source}`;
+  return j;
+}
+$('resolveBtn').onclick = resolveTarget;
+$('target').addEventListener('keydown', e => { if (e.key === 'Enter') resolveTarget().then(j => j && load()); });
+
+// ---------------------------------------------------------------- frames
+function visitLabel(v) { return `${v.date_start}${v.date_end !== v.date_start ? ' → ' + v.date_end : ''}`; }
+function buildFrames() {
+  const mode = $('mode').value, band = $('band').value;
+  const vb = v => (v.bands || {})[band] || (band === 'all' ? {stack: v.stack, diff: v.diff} : {});
+  const vis = (M ? M.visits : frames.visits || []).filter(Boolean);
+  $('abBox').classList.toggle('hide', !(mode === 'ab' || mode === 'blink'));
+  if (mode === 'stack' || mode === 'diff')
+    return vis.filter(v => vb(v)[mode]).map(v => ({src: vb(v)[mode], visit: v.index,
+      label: `Visit ${v.index + 1}/${vis.length} · ${visitLabel(v)} · ${v.n_ok}/${v.n} images · ${mode === 'diff' ? 'minus first visit' : 'stack'}`}));
+  if (!M) return [];
+  const b2 = band === 'rgb' ? 'all' : band;
+  if (mode === 'deep') {
+    const u = (M.deep || {})[band]; return u ? [{src: u, visit: 0, label: `Deep: all ${M.visits.length} visits averaged · ${band}`}] : [];
+  }
+  if (mode === 'ab' || mode === 'blink') {
+    const a = +$('va').value, b = +$('vb').value, A = M.visits[a], B = M.visits[b];
+    if (!A || !B) return [];
+    if (mode === 'ab') return [{src: `/api/jobs/${jobId}/diff.png?a=${a}&b=${b}&band=${b2}`, visit: a,
+      label: `A − B: visit ${a + 1} (${visitLabel(A)}) minus visit ${b + 1} (${visitLabel(B)}) · white = brighter in A`}];
+    return [A, B].map(v => ({src: vb(v).stack, visit: v.index, label: `Blink: visit ${v.index + 1} · ${visitLabel(v)}`})).filter(f => f.src);
+  }
+  if (mode === 'single') {
+    return (M.exposures || []).filter(e => band === 'all' || band === 'rgb' || `D${e.detector}` === band)
+      .map(e => ({src: `/api/jobs/${jobId}/exposure/${e.i}.png`, visit: e.visit, exp: e,
+        label: `Exposure ${e.i + 1} · ${e.date} · D${e.detector} · ${e.wavelength_um ? e.wavelength_um.toFixed(3) + ' µm' : ''}` +
+               (e.flags && e.flags.at_target && e.flags.at_target.length ? ' · flags at target: ' + e.flags.at_target.join(', ') : '')}));
+  }
+  return [];
+}
+let fl = [];
+function refresh(keepIndex) {
+  fl = buildFrames();
+  $('slider').max = Math.max(fl.length - 1, 0);
+  if (!keepIndex) cur = Math.min(cur, Math.max(fl.length - 1, 0));
+  show();
+  if (jobId && M) {
+    const band = $('band').value, mode = $('mode').value === 'diff' ? 'diff' : 'stack';
+    $('gif').href = `/api/jobs/${jobId}/flipbook.gif?band=${band}&mode=${mode}&ms=${$('speed').value}`;
+    $('gif').classList.remove('hide');
+  }
+}
+function show() {
+  if (!fl.length) { $('label').textContent = M ? 'No frames for this band/view.' : ''; return; }
+  cur = ((cur % fl.length) + fl.length) % fl.length;
+  const f = fl[cur];
+  if ($('frame').getAttribute('src') !== f.src) $('frame').src = f.src;
+  $('slider').value = cur;
+  $('label').textContent = f.label;
+  drawOverlay(f.visit);
+}
+$('frame').addEventListener('error', () => {
+  if ($('frame').getAttribute('src')) $('label').textContent += ' · not available (this detector has no images in one of these visits)';
+});
+function restartTimer() { clearInterval(timer); timer = setInterval(() => { if (playing && fl.length > 1) { cur++; show(); } }, +$('speed').value); }
+$('speed').oninput = () => { restartTimer(); refresh(true); };
+['mode', 'band', 'va', 'vb', 'gaiaOn', 'gmax', 'wiseOn', 'crossOn'].forEach(id => $(id).onchange = () => { refresh(); syncUrl(); });
+$('play').onclick = () => { playing = !playing; $('play').textContent = playing ? '⏸' : '▶︎'; };
+$('prev').onclick = () => { playing = false; $('play').textContent = '▶︎'; cur--; show(); };
+$('next').onclick = () => { playing = false; $('play').textContent = '▶︎'; cur++; show(); };
+$('slider').oninput = () => { playing = false; $('play').textContent = '▶︎'; cur = +$('slider').value; show(); };
+document.addEventListener('keydown', e => {
+  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+  if (e.key === ' ') { e.preventDefault(); $('play').click(); }
+  else if (e.key === 'ArrowLeft') $('prev').click();
+  else if (e.key === 'ArrowRight') $('next').click();
+  else if (e.key === 'd') { $('mode').value = $('mode').value === 'diff' ? 'stack' : 'diff'; refresh(); }
+  else if (e.key === 'b') { $('mode').value = 'blink'; refresh(); }
+});
+
+// ---------------------------------------------------------------- overlays
+function el(tag, attrs, parent) { const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]); parent.appendChild(e); return e; }
+function drawOverlay(visit) {
+  const g = $('catLayer'), mk = $('markLayer'); g.replaceChildren(); mk.replaceChildren();
+  const n = (M && M.grid && M.grid.n) || 1, px = 1 / n;
+  if ($('crossOn').checked) {
+    for (const [x1, y1, x2, y2] of [[.5, .5 - 4 * px, .5, .5 - 1.6 * px], [.5, .5 + 1.6 * px, .5, .5 + 4 * px],
+                                    [.5 - 4 * px, .5, .5 - 1.6 * px, .5], [.5 + 1.6 * px, .5, .5 + 4 * px, .5]])
+      el('line', {x1, y1, x2, y2, class: 'cross'}, mk);
+  }
+  if (pick) el('circle', {cx: pick.fx, cy: pick.fy, r: 2.5 * px, class: 'pick'}, mk);
+  const draw = (cat, kind, magLimit) => {
+    if (!cat) return;
+    for (const s of cat.sources) {
+      if (magLimit != null && (s.mag ?? 99) > magLimit) continue;
+      const [x, y] = s.xy[visit] || s.xy[0];
+      if (x < 0 || x > 1 || y < 0 || y > 1) continue;
+      const pm = Math.hypot(s.pmra || 0, s.pmdec || 0), fast = kind === 'gaia' && pm > 100;
+      const c = el('circle', {cx: x, cy: y, r: px * Math.max(1.2, 3.2 - 0.12 * ((s.mag ?? 18) - 8)),
+                              class: kind + (fast ? ' fast' : '')}, g);
+      const t = document.createElementNS(SVGNS, 'title');
+      t.textContent = kind === 'gaia'
+        ? `Gaia DR3 ${s.id}\nG = ${s.g?.toFixed(2)}\npm = ${s.pmra?.toFixed(1)}, ${s.pmdec?.toFixed(1)} mas/yr` + (s.parallax ? `\nparallax = ${s.parallax.toFixed(2)} mas` : '')
+        : `WISE ${s.id}\nW1 = ${s.w1?.toFixed(2)}  W2 = ${s.w2?.toFixed(2)}` + (s.w1 != null && s.w2 != null ? `\nW1−W2 = ${(s.w1 - s.w2).toFixed(2)}${s.w1 - s.w2 > 1 ? ' (very red: brown-dwarf-like)' : ''}` : '');
+      c.appendChild(t);
+      if (fast) { const k = 10 / 1000 / cat.pixel_arcsec * px;
+        el('line', {x1: x, y1: y, x2: x - (s.pmra || 0) * k, y2: y - (s.pmdec || 0) * k, 'marker-end': 'url(#arr)'}, g); }
+    }
+  };
+  if ($('gaiaOn').checked) draw(cats.gaia, 'gaia', +$('gmax').value);
+  if ($('wiseOn').checked) draw(cats.wise, 'wise', null);
+}
+async function loadCatalog(which) {
+  const r = await fetch(`/api/jobs/${jobId}/${which}`);
+  if (!r.ok) { $('catInfo').textContent += ` ${which}: unavailable.`; return; }
+  cats[which] = await r.json();
+  const c = cats[which], a = c.alignment || {};
+  let txt = `${which === 'gaia' ? 'Gaia DR3' : 'WISE'} (${c.provider}): ${c.sources.length} sources.`;
+  if (which === 'gaia' && a.n) txt += ` Alignment vs ${a.n} star${a.n > 1 ? 's' : ''}: ${a.median_abs_px} px (${(a.median_abs_px * c.pixel_arcsec).toFixed(1)}″)` + (a.reliable ? '' : ', too few stars to judge') + '.';
+  $('catInfo').textContent = ($('catInfo').textContent + ' ' + txt).trim();
+  show(); addAladinCatalog(which);
+}
+
+// ---------------------------------------------------------------- click → spectrum
+$('stage').addEventListener('click', e => {
+  if (!M) return;
+  const r = $('frame').getBoundingClientRect();
+  const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+  const n = M.grid.n, scale = M.grid.pixel_arcsec / 3600;
+  // invert the TAN grid locally (fields are small): east is left, north is up
+  const dx = (fx * n - n / 2) * scale, dy = (n / 2 - fy * n) * scale;
+  const dec = M.params.dec + dy, ra = M.params.ra - dx / Math.cos(M.params.dec * Math.PI / 180);
+  pick = {fx, fy, ra: (ra + 360) % 360, dec};
+  show(); plots(pick.ra, pick.dec);
+});
+$('backToTarget').onclick = () => { pick = null; show(); plots(); };
+
+async function plots(ra, dec) {
+  const q = ra != null ? `?ra=${ra.toFixed(6)}&dec=${dec.toFixed(6)}` : '';
+  $('specTitle').textContent = ra != null ? `Spectrum at ${ra.toFixed(4)}, ${dec.toFixed(4)}` : 'Spectrum of the target';
+  $('backToTarget').classList.toggle('hide', ra == null);
+  $('specNote').textContent = 'Measuring…';
+  const s = await (await fetch(`/api/jobs/${jobId}/spectrum${q}`)).json();
+  const byDet = {};
+  for (const p of s.points) (byDet[p.detector] ??= []).push(p);
+  const layout = (t, x, y, extra = {}) => ({title: {text: t, font: {size: 13}}, paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+    font: {color: '#e6e6e6', size: 11}, margin: {l: 52, r: 10, t: 30, b: 40}, legend: {orientation: 'h', y: -0.25},
+    xaxis: {title: x, gridcolor: '#30363d'}, yaxis: {title: y, gridcolor: '#30363d'}, ...extra});
+  const tr = (d, ps, x) => ({x: ps.map(x), y: ps.map(p => p.flux_mjy), mode: 'markers', type: 'scatter', name: 'D' + d,
+    marker: {size: 6, color: DCOL[d]}, error_y: {type: 'data', array: ps.map(p => p.err_mjy), visible: true, thickness: 1, color: DCOL[d]},
+    text: ps.map(p => `${p.wavelength_um?.toFixed(3)} µm · MJD ${p.t_mid.toFixed(2)}`), hovertemplate: '%{text}<br>%{y:.3f} mJy<extra></extra>'});
+  Plotly.react('spec', Object.entries(byDet).map(([d, ps]) => tr(d, ps, p => p.wavelength_um)),
+    layout('', 'wavelength (µm)', 'flux (mJy)'), {responsive: true, displaylogo: false});
+  const sat = {};
+  for (const p of (s.saturated || [])) (sat[p.detector] ??= []).push(p);
+  const satTraces = Object.entries(sat).map(([d, ps]) => { ps = [...ps].sort((a, b) => a.t_mid - b.t_mid);
+    return {x: ps.map(p => p.t_mid), y: ps.map(p => p.wings_rel), mode: 'markers', type: 'scatter', name: `D${d} wings`,
+      marker: {size: 7, color: DCOL[d], symbol: 'circle-open'},
+      text: ps.map(p => `${p.wavelength_um?.toFixed(3)} µm · saturated: relative brightness from PSF wings`),
+      hovertemplate: '%{text}<br>%{y:.3f}<extra></extra>'}; });
+  Plotly.react('lc', Object.entries(byDet).map(([d, ps]) => tr(d, [...ps].sort((a, b) => a.t_mid - b.t_mid), p => p.t_mid)).concat(satTraces),
+    layout('Light curve (per detector)', 'MJD', satTraces.length ? 'flux (mJy) / wings (relative)' : 'flux (mJy)'), {responsive: true, displaylogo: false});
+  const bl = (s.blends || []).map(b => `${b.catalog} star (${b.catalog === 'Gaia' ? 'G' : 'W1'} = ${b.mag?.toFixed(1)}) ${b.sep_arcsec}″ away`);
+  const satNote = (s.saturated || []).length ? `<span style="color:var(--fast)">⚠ ${s.saturated.length} measurement(s) saturated: SPHEREx is too sensitive for this bright star, so its core is masked. ` +
+    `The light curve shows its relative brightness from the unsaturated PSF wings (open circles; compare within one detector).</span><br>` : '';
+  $('specNote').innerHTML = satNote + (bl.length ? `<span style="color:var(--fast)">⚠ Blended: ${bl.join('; ')}. SPHEREx pixels are 6.2″, so its light is mixed into this spectrum.</span><br>` : '') +
+    `${s.points.length} measurements` + (s.n_masked ? ` · ${s.n_masked} skipped (saturated/masked core)` : '') + ` · ${s.note}`;
+}
+
+// ---------------------------------------------------------------- metadata tables
+function flagTags(fl, atTarget) {
+  if (!fl) return '';
+  return Object.entries(fl).sort((a, b) => b[1] - a[1]).slice(0, 6)
+    .map(([n, f]) => `<span class="tag${(atTarget || []).includes(n) ? ' bad' : ''}" title="${(f * 100).toFixed(1)}% of pixels">${n} ${(f * 100).toFixed(0)}%</span>`).join('');
+}
+async function tables() {
+  const x = await (await fetch(`/api/jobs/${jobId}/exposures`)).json();
+  $('visitTable').innerHTML = `<table><thead><tr><th>Visit</th><th>Dates</th><th>Images</th><th>Flags near target (mean)</th></tr></thead><tbody>` +
+    x.visits.map(v => `<tr data-v="${v.index}"><td>${v.index + 1}</td><td>${v.date_start} → ${v.date_end}</td><td>${v.n_ok}/${v.n}</td><td>${flagTags(v.flags_mean)}</td></tr>`).join('') + '</tbody></table>';
+  $('expTable').innerHTML = `<table><thead><tr><th>#</th><th>Date</th><th>Det</th><th>λ µm</th><th>Flux mJy</th><th>Masked</th><th>Flags</th></tr></thead><tbody>` +
+    x.exposures.map(e => `<tr data-i="${e.i}"><td>${e.i + 1}</td><td>${e.date}</td><td>D${e.detector}</td><td>${e.wavelength_um?.toFixed(3) ?? ''}</td>` +
+      `<td>${e.flux_mjy != null ? e.flux_mjy.toFixed(3) : (e.phot_flag || '–')}</td><td>${(e.frac_masked * 100).toFixed(1)}%</td>` +
+      `<td>${flagTags(e.flags && e.flags.frac, e.flags && e.flags.at_target)}</td></tr>`).join('') + '</tbody></table>';
+  $('visitTable').querySelectorAll('tr[data-v]').forEach(tr => tr.onclick = () => {
+    $('mode').value = 'stack'; refresh(); cur = fl.findIndex(f => f.visit === +tr.dataset.v); playing = false; show(); });
+  $('expTable').querySelectorAll('tr[data-i]').forEach(tr => tr.onclick = () => {
+    $('mode').value = 'single'; $('band').value = 'all'; refresh(); cur = fl.findIndex(f => f.exp && f.exp.i === +tr.dataset.i); playing = false; show(); });
+}
+
+// ---------------------------------------------------------------- Aladin Lite
+let pendingAladin = null;
+window.addEventListener('aladin-ready', () => { if (pendingAladin) initAladin(...pendingAladin); });
+function initAladin(ra, dec, fovDeg) {
+  if (document.body.classList.contains('embed')) return;
+  if (typeof window.A === 'undefined') { pendingAladin = [ra, dec, fovDeg]; return; }  // module still loading
+  A.init.then(() => {
+    if (!aladin) {
+      aladin = A.aladin('#aladin', {fov: fovDeg * 3, target: `${ra} ${dec}`, survey: $('survey').value,
+        projection: 'TAN', showCooGridControl: true, showReticle: false, cooFrame: 'ICRS'});
+      setSurvey($('survey').value);
+      aladin.on('click', e => { if (!e || e.isDragging || e.ra == null) return;
+        $('ra').value = e.ra.toFixed(6); $('dec').value = e.dec.toFixed(6); $('target').value = '';
+        $('resolved').textContent = `Picked on the sky map: ${e.ra.toFixed(5)}, ${e.dec.toFixed(5)}. Press Load.`; });
+      $('survey').onchange = () => setSurvey($('survey').value);
+    } else { aladin.gotoRaDec(ra, dec); aladin.setFoV(fovDeg * 3); }
+    aladin.removeLayers && aladin.removeLayers();
+    alCats = {};
+    const ov = A.graphicOverlay({color: '#4ea1ff', lineWidth: 2});
+    aladin.addOverlay(ov);
+    const h = fovDeg / 2, c = Math.cos(dec * Math.PI / 180);
+    ov.add(A.polygon([[ra - h / c, dec - h], [ra + h / c, dec - h], [ra + h / c, dec + h], [ra - h / c, dec + h]]));
+    const t = A.catalog({name: 'target', color: '#ffd33d', sourceSize: 14, shape: 'cross'});
+    aladin.addCatalog(t); t.addSources([A.source(ra, dec, {name: 'target'})]);
+  }).catch(e => log('Aladin: ' + e));
+}
+function setSurvey(url) {
+  // Aladin v3.8: base layer from a HiPS URL (the CDS IDs it defaults to were unreachable)
+  try {
+    if (A.imageHiPS) aladin.setBaseImageLayer(A.imageHiPS(url, {name: $('survey').selectedOptions[0].text}));
+    else aladin.setImageSurvey(url);
+  } catch (e) { log('sky map survey: ' + e); }
+}
+function addAladinCatalog(which) {
+  if (!aladin || !cats[which]) { setTimeout(() => aladin && cats[which] && addAladinCatalog(which), 3000); return; }
+  const c = A.catalog({name: which === 'gaia' ? 'Gaia DR3' : 'WISE', color: which === 'gaia' ? '#3fb950' : '#d2a8ff',
+    sourceSize: 9, shape: which === 'gaia' ? 'circle' : 'square'});
+  aladin.addCatalog(c);
+  c.addSources(cats[which].sources.filter(s => s.ra != null).map(s => A.source(s.ra, s.dec, {name: String(s.id)})));
+}
+
+// ---------------------------------------------------------------- AI guide
+let aiEnabled = false, aiHistory = [], aiBusy = false;
+fetch('/api/health').then(r => r.json()).then(h => { aiEnabled = !!h.ai_enabled; if (aiEnabled && M) $('aiCard').classList.remove('hide'); }).catch(() => {});
+
+function esc(t) { return t.replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c])); }
+function md(text) {  // tiny, safe markdown: escape first, then **bold**, *italic*, bullets, paragraphs
+  // models sometimes emit LaTeX ($G = 8.19$) despite instructions: show it as plain text
+  text = text.replace(/\$([^$\n]{1,80})\$/g, (m, x) => x.replace(/\\([%&_#$])/g, '$1').replace(/\\[a-z]+\s*/gi, '').replace(/[{}]/g, ''));
+  const lines = esc(text).split('\n'); let html = '', list = false;
+  for (let ln of lines) {
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(ln)) { if (list) { html += '</ul>'; list = false; } continue; }
+    const h = ln.match(/^\s*#{1,6}\s+(.*)/);
+    if (h) { if (list) { html += '</ul>'; list = false; }
+      html += `<p style="margin-top:8px"><b>${h[1].replace(/\*\*/g, '')}</b></p>`; continue; }
+    ln = ln.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/(^|\s)\*(\S.*?)\*(?=\s|$|[.,;:])/g, '$1<i>$2</i>');
+    const m = ln.match(/^\s*(?:[-*•]|\d+\.)\s+(.*)/);
+    if (m) { if (!list) { html += '<ul>'; list = true; } html += `<li>${m[1]}</li>`; continue; }
+    if (list) { html += '</ul>'; list = false; }
+    if (ln.trim()) html += `<p>${ln}</p>`;
+  }
+  return html + (list ? '</ul>' : '');
+}
+function aiMsg(cls, html) { const d = document.createElement('div'); d.className = 'msg ' + cls; d.innerHTML = html;
+  $('aiLog').appendChild(d); $('aiLog').scrollTop = 1e9; return d; }
+function aiChips() {
+  const qs = ['Is anything moving in this field?', 'What does the spectrum tell me about the target?',
+              'Is the target changing brightness over time?', 'What do the contamination flags mean here?'];
+  if (M && M.n_phot_masked) qs.push('Why is the target saturated, and how much can I trust the light curve?');
+  if (M && (M.bands || []).includes('rgb')) qs.push('What do the colours in the RGB view mean?');
+  $('aiChips').innerHTML = qs.map(q => `<button class="chip">${esc(q)}</button>`).join('');
+  $('aiChips').querySelectorAll('.chip').forEach(b => b.onclick = () => ask(b.textContent));
+}
+function currentView() {
+  const f = fl[cur] || {};
+  return {name: $('target').value.trim() || null, mode: $('mode').value, band: $('band').value,
+          frame_label: $('label').textContent, frame_src: $('frame').getAttribute('src'),
+          pick: pick ? {ra: pick.ra, dec: pick.dec} : null};
+}
+async function ask(question) {
+  question = (question || '').trim();
+  if (!question || aiBusy || !jobId) return;
+  aiBusy = true; $('aiAsk').disabled = true; $('aiExplain').disabled = true; $('aiInput').value = '';
+  aiMsg('user', esc(question));
+  const box = aiMsg('ai', '<span class="mut">Thinking…</span>');
+  let text = '';
+  try {
+    const r = await fetch(`/api/jobs/${jobId}/ask`, {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({question, history: aiHistory.slice(-8), view: currentView()})});
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || `HTTP ${r.status}`); }
+    const reader = r.body.getReader(), dec = new TextDecoder(); let buf = '';
+    for (;;) {
+      const {value, done} = await reader.read(); if (done) break;
+      buf += dec.decode(value, {stream: true});
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+        const line = chunk.split('\n').find(l => l.startsWith('data:')); if (!line) continue;
+        const ev = JSON.parse(line.slice(5));
+        if (ev.type === 'delta') { text += ev.text; box.innerHTML = md(text); $('aiLog').scrollTop = 1e9; }
+        else if (ev.type === 'error') throw new Error(ev.message);
+      }
+    }
+    if (!text) throw new Error('No answer received. Please try again.');
+    aiHistory.push({role: 'user', text: question}, {role: 'model', text});
+  } catch (e) {
+    box.classList.add('err'); box.innerHTML = (text ? md(text) : '') + `<p>⚠ ${esc(String(e.message || e))}</p>`;
+  } finally { aiBusy = false; $('aiAsk').disabled = false; $('aiExplain').disabled = false; }
+}
+$('aiAsk').onclick = () => ask($('aiInput').value);
+$('aiInput').addEventListener('keydown', e => { if (e.key === 'Enter') ask($('aiInput').value); });
+$('aiExplain').onclick = () => ask("Give me an overview of what I'm seeing right now: the target, what this view shows, what stands out, and what I should try next in the tool.");
+$('aiClear').onclick = () => { aiHistory = []; $('aiLog').replaceChildren(); };
+
+// ---------------------------------------------------------------- job
+function syncUrl() {
+  const q = new URLSearchParams();
+  if ($('target').value.trim()) q.set('name', $('target').value.trim());
+  if ($('ra').value) { q.set('ra', (+$('ra').value).toFixed(6)); q.set('dec', (+$('dec').value).toFixed(6)); }
+  q.set('fov', $('fov').value);
+  if ($('band').value !== 'all') q.set('band', $('band').value);
+  if ($('mode').value !== 'stack') q.set('mode', $('mode').value);
+  if (document.body.classList.contains('embed')) q.set('embed', '1');
+  history.replaceState(null, '', '?' + q.toString());
+}
+$('share').onclick = () => { syncUrl(); navigator.clipboard?.writeText(location.href); $('share').textContent = 'Copied!'; setTimeout(() => $('share').textContent = 'Copy link', 1500); };
+$('embedBtn').onclick = () => { syncUrl(); const u = new URL(location.href); u.searchParams.set('embed', '1');
+  navigator.clipboard?.writeText(`<iframe src="${u}" width="560" height="720" style="border:0" title="SPHEREx viewer"></iframe>`);
+  $('embedBtn').textContent = 'Copied!'; setTimeout(() => $('embedBtn').textContent = 'Copy embed code', 1500); };
+
+async function load() {
+  if ($('target').value.trim() && !$('ra').value) { if (!(await resolveTarget())) return; }
+  const ra = +$('ra').value, dec = +$('dec').value, fov = +$('fov').value;
+  if ($('ra').value === '' || !isFinite(ra) || !isFinite(dec)) { $('status').textContent = 'Enter a name or RA/Dec first.'; return; }
+  const dets = [...document.querySelectorAll('#dets input:checked')].map(i => +i.value);
+  syncUrl();
+  $('wise').href = `http://byw.tools/wiseview#ra=${ra}&dec=${dec}&size=${Math.round(fov * 3600 / 2.75)}&band=3&gaia=1`;
+  M = null; frames = {visits: []}; cur = 0; pick = null; cats = {gaia: null, wise: null};
+  aiHistory = []; $('aiLog').replaceChildren(); $('aiCard').classList.add('hide');
+  $('frame').removeAttribute('src'); $('catInfo').textContent = ''; $('gif').classList.add('hide');
+  $('visitTable').innerHTML = ''; $('expTable').innerHTML = ''; refresh();
+  if (es) es.close();
+  initAladin(ra, dec, fov);
+  const t0 = performance.now();
+  const r = await fetch('/api/jobs', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ra, dec, fov, detectors: dets.length === 6 ? [] : dets})});
+  if (!r.ok) { $('status').textContent = 'Error: ' + await r.text(); return; }
+  jobId = (await r.json()).job_id;
+  log(`job ${jobId}`);
+  es = new EventSource(`/api/jobs/${jobId}/events`);
+  es.addEventListener('queued', e => { $('status').textContent = 'Queued: ' + JSON.parse(e.data).message + '…'; });
+  es.addEventListener('found', e => {
+    const d = JSON.parse(e.data);
+    frames.visits = d.visits.map(() => null);
+    $('prog').max = Math.max(d.n, 1); $('prog').value = 0;
+    $('status').textContent = d.n ? `${d.n} images in ${d.visits.length} visit(s)${d.cached ? ' (cached)' : ''}…`
+      : 'No SPHEREx images cover this position yet. New data arrives often; try again later or another spot.';
+  });
+  es.addEventListener('progress', e => { const d = JSON.parse(e.data); $('prog').value = d.done;
+    $('status').textContent = `Downloaded ${d.done}/${d.total}` + (d.failed ? ` · ${d.failed} failed` : '') + ` · ${((performance.now() - t0) / 1000).toFixed(0)} s`; });
+  es.addEventListener('frame', e => { const d = JSON.parse(e.data); frames.visits[d.index] = d;
+    log(`visit ${d.index + 1} ready at ${((performance.now() - t0) / 1000).toFixed(1)} s`); refresh(true); });
+  es.addEventListener('complete', e => {
+    M = JSON.parse(e.data).manifest; es.close(); $('prog').value = $('prog').max;
+    $('status').textContent = `Done in ${((performance.now() - t0) / 1000).toFixed(1)} s · ${M.n_images} images · ${M.visits.length} visits` +
+      (M.n_failed ? ` · ${M.n_failed} failed` : '') + ` · server ${JSON.stringify(M.timings)}`;
+    bandOptions(M.bands);
+    const opts = M.visits.map(v => `<option value="${v.index}">${v.index + 1}: ${v.date_start}</option>`).join('');
+    $('va').innerHTML = opts; $('vb').innerHTML = opts; $('va').value = M.visits.length - 1; $('vb').value = 0;
+    if (params.get('mode')) $('mode').value = params.get('mode');
+    refresh(); syncUrl(); if (!M.n_images) return;
+    plots(); tables(); loadCatalog('gaia'); loadCatalog('wise');
+    if (aiEnabled) { $('aiCard').classList.remove('hide'); aiChips(); }
+  });
+  es.addEventListener('error', e => { if (e.data) { $('status').textContent = 'Job error: ' + JSON.parse(e.data).message; es.close(); } });
+}
+$('go').onclick = load;
+
+(async () => {
+  restartTimer();
+  if (params.get('fov')) $('fov').value = params.get('fov');
+  if (params.get('name')) $('target').value = params.get('name');
+  if (params.get('ra') && params.get('dec')) { $('ra').value = params.get('ra'); $('dec').value = params.get('dec'); load(); }
+  else if (params.get('name')) { if (await resolveTarget()) load(); }
+})();
+</script>
+</body>
+</html>
